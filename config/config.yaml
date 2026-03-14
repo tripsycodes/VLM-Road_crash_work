@@ -1,0 +1,80 @@
+# Configuration file for Car Crash Video Summarization Project
+
+# Dataset Configuration
+dataset:
+  root_dir: "/home/vaneet_2221cs15/vlmvideos/Vaneet_mam_vlm"
+  videos_dir: "videos"
+  ground_truth_file: "Car_Crash_Text_Dataset (3).xlsx"
+  processed_dir: "data/processed"
+  
+  # Video Processing
+  segment_duration: 5  # seconds
+  frame_interval: 5    # every 5th frame
+  fps: 10              # assumed frame rate
+  
+  # Dataset Split
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  random_seed: 42
+
+# Model Configuration
+model:
+  name: "llava-next"
+  vision_model: "llava-hf/llava-v1.6-mistral-7b-hf"
+  language_model: "llava-hf/llava-v1.6-mistral-7b-hf"  
+  device: "cuda"
+  batch_size: 4
+  max_frames: 30  # For 5-second videos with every 5th frame
+
+# Training Configuration
+training:
+  num_epochs: 5
+  learning_rate: 5e-6  # Very conservative learning rate to prevent NaN losses
+  weight_decay: 0.01
+  warmup_steps: 100
+  save_dir: "results/checkpoints"
+  log_dir: "results/logs"
+  save_every: 1  # Save checkpoint every N epochs
+  max_grad_norm: 0.3  # Very tight gradient clipping for stability
+  
+  # Loss tracking
+  track_loss: true
+  loss_file: "results/training_loss.json"
+  val_loss_file: "results/validation_loss.json"
+
+# Evaluation Configuration
+evaluation:
+  # Zero-shot evaluation
+  zero_shot: true
+  pretrained_model_path: null  # Will use pretrained if null
+  
+  # Metrics
+  metrics:
+    - "bleu"
+    - "nli"
+  
+  # BLEU Configuration
+  bleu:
+    max_order: 4
+    smooth: true
+  
+  # NLI Configuration
+  nli:
+    model_name: "roberta-large-mnli"
+    batch_size: 16
+    device: "cuda"
+
+# Temporal Prompts Configuration
+temporal_prompts:
+  format: "zero_padded"  # "00", "05", "10", etc.
+  max_frames: 30
+
+# Paths
+paths:
+  data: "data"
+  results: "results"
+  checkpoints: "results/checkpoints"
+  metrics: "results/metrics"
+  logs: "results/logs"
+
