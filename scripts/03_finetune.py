@@ -607,7 +607,9 @@ def main():
     model.config.use_cache = False
 
     # Use LoRA/PEFT for parameter-efficient fine-tuning
-    use_lora = True    if use_lora:
+    use_lora = True    
+    
+    if use_lora:
         try:
             from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
             from peft import TaskType
