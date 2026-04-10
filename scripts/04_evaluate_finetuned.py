@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-"""
-Evaluate fine-tuned model on test set with full metric suite.
-"""
 
 import sys
 import json
@@ -11,6 +8,7 @@ from tqdm import tqdm
 import cv2
 import numpy as np
 import torch
+import gc
 
 import nltk
 nltk.download("wordnet", quiet=True)
@@ -19,13 +17,7 @@ nltk.download("omw-1.4", quiet=True)
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.models import LLaVANeXTWrapper
-from src.evaluation import BLEUEvaluator, NLIEvaluator
 from src.utils import get_config
-
-from rouge_score import rouge_scorer
-from nltk.translate.meteor_score import meteor_score
-from bert_score import score as bert_score
 from PIL import Image
 
 
@@ -50,108 +42,82 @@ def load_frames(video_path: str, max_frames: int = 30):
 
 
 # -------------------------------
-def load_finetuned_model(checkpoint_path: str, base_model_name: str, device: str):
-    from transformers import (
-        LlavaNextProcessor,
-        LlavaNextForConditionalGeneration,
-        LlavaProcessor,
-        LlavaForConditionalGeneration
-    )
+def load_finetuned_model(checkpoint_path, base_model_name, device):
+    from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration
+    from peft import LoraConfig, get_peft_model, TaskType
 
     print(f"Loading base model: {base_model_name}")
 
-    is_next = "llava-v1.6" in base_model_name or "llava-next" in base_model_name.lower()
+    processor = LlavaNextProcessor.from_pretrained(base_model_name)
 
-    if is_next:
-        processor = LlavaNextProcessor.from_pretrained(base_model_name)
-        model = LlavaNextForConditionalGeneration.from_pretrained(
-            base_model_name,
-            torch_dtype=torch.float16 if device != "cpu" else torch.float32,
-            low_cpu_mem_usage=True,
-            device_map=None
-        )
-    else:
-        processor = LlavaProcessor.from_pretrained(base_model_name)
-        model = LlavaForConditionalGeneration.from_pretrained(
-            base_model_name,
-            torch_dtype=torch.float16 if device != "cpu" else torch.float32,
-            low_cpu_mem_usage=True,
-            device_map=None
-        )
-
-    if device != "cpu":
-        model = model.to(device)
+    model = LlavaNextForConditionalGeneration.from_pretrained(
+        base_model_name,
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True
+    )
 
     print(f"Loading checkpoint: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
     state_dict = checkpoint["model_state_dict"]
-    has_lora = any("lora" in k.lower() for k in state_dict.keys())
 
-    if has_lora:
-        print("Detected LoRA checkpoint...")
+    # ✅ Correct LoRA config
+    lora_config = LoraConfig(
+        r=4,
+        lora_alpha=8,
+        target_modules=["q_proj", "v_proj"],
+        lora_dropout=0.05,
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
+    )
 
-        from peft import LoraConfig, get_peft_model, TaskType
+    model = get_peft_model(model, lora_config)
 
-        # ✅ CORRECT LoRA config (must match training)
-        lora_config = LoraConfig(
-            r=4,
-            lora_alpha=8,
-            target_modules=["q_proj", "v_proj"],
-            lora_dropout=0.05,
-            bias="none",
-            task_type=TaskType.CAUSAL_LM,
-        )
+    # Load only LoRA weights
+    lora_state_dict = {k: v for k, v in state_dict.items() if "lora" in k.lower()}
+    model.load_state_dict(lora_state_dict, strict=False)
 
-        model = get_peft_model(model, lora_config)
-
-        if device != "cpu":
-            model = model.to(device)
-
-        # Load only LoRA weights
-        lora_state_dict = {k: v for k, v in state_dict.items() if "lora" in k.lower()}
-        lora_state_dict = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in lora_state_dict.items()}
-
-        model.load_state_dict(lora_state_dict, strict=False)
-        print("✓ LoRA weights loaded")
-
-    else:
-        print("Loading full model checkpoint...")
-        model.load_state_dict(state_dict, strict=False)
-
+    model = model.half()
+    model = model.to("cpu") 
     model.eval()
+
+    # 🔥 Free memory
+    gc.collect()
+    torch.cuda.empty_cache()
 
     print(f"Loaded checkpoint from epoch {checkpoint.get('epoch', 'unknown')}")
 
-    # ✅ SAFE PRINTING
     train_loss = checkpoint.get("train_loss", None)
-    if train_loss is not None:
-        print(f"Training loss: {train_loss:.4f}")
-    else:
-        print("Training loss: N/A")
+    print(f"Training loss: {train_loss:.4f}" if train_loss else "Training loss: N/A")
 
     val_loss = checkpoint.get("val_loss", None)
-    if val_loss is not None:
-        print(f"Validation loss: {val_loss:.4f}")
-    else:
-        print("Validation loss: N/A")
+    print(f"Validation loss: {val_loss:.4f}" if val_loss else "Validation loss: N/A")
 
+    # -------------------------------
     class Wrapper:
         def __init__(self, model, processor):
             self.model = model
             self.processor = processor
 
         def generate_summary(self, frames):
+            if not frames:
+                return {"text_summary": ""}
+
             rep = frames[len(frames) // 2]
             img = Image.fromarray(rep).convert("RGB")
 
             prompt = "USER: <image>\nDescribe the accident.\nASSISTANT:"
 
             inputs = self.processor(text=prompt, images=img, return_tensors="pt")
-            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            inputs = {k: v.to("cpu") for k, v in inputs.items()}
 
             with torch.no_grad():
-                out = self.model.generate(**inputs, max_new_tokens=128)
+                out = self.model.generate(
+                    **inputs,
+                    max_new_tokens=64,
+                    do_sample=False
+                )
 
             text = self.processor.decode(out[0], skip_special_tokens=True)
             return {"text_summary": text.split("ASSISTANT:")[-1].strip()}
@@ -177,15 +143,15 @@ def main():
     with open(processed_dir / "annotations_test.json") as f:
         annotations = json.load(f)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
     model = load_finetuned_model(
         args.checkpoint,
         config["model"]["vision_model"],
-        device
+        device="cpu"
     )
 
     predictions, references = [], []
+
+    print("\nRunning inference...")
 
     for video_path in tqdm(split["splits"]["test"]):
         vid = Path(video_path).stem
