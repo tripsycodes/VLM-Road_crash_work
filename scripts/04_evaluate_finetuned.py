@@ -109,9 +109,9 @@ def load_finetuned_model(checkpoint_path: str, base_model_name: str, device: str
             target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
             
             lora_config = LoraConfig(
-                r=8,  # LoRA rank (same as training)
-                lora_alpha=16,  # LoRA alpha (same as training)
-                target_modules=target_modules,
+                r=4,  # LoRA rank (same as training)
+                lora_alpha=8,  # LoRA alpha (same as training)
+                target_modules = ["q_proj", "v_proj"],
                 lora_dropout=0.05,
                 bias="none",
                 task_type=TaskType.CAUSAL_LM,
