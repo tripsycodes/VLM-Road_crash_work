@@ -10,6 +10,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import argparse
+from results.checkpoints import save_checkpoint
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -17,7 +18,6 @@ sys.path.insert(0, str(project_root))
 from src.utils import get_config
 from src.models import LLaVANeXTWrapper
 from src.training import LossTracker
-
 
 torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -176,8 +176,6 @@ def train_epoch(model, loader, optimizer, processor, device, grad_accum):
 
         total_loss += loss.detach().item()
 
-        del outputs, loss, labels
-
     return total_loss / len(loader)
 
 
@@ -196,9 +194,6 @@ def main():
 
     with open(processed_dir / "annotations_train.json") as f:
         train_ann = json.load(f)
-
-    with open(processed_dir / "annotations_val.json") as f:
-        val_ann = json.load(f)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -239,16 +234,7 @@ def main():
         is_next=True
     )
 
-    val_ds = VideoSummarizationDataset(
-        split["splits"]["val"],
-        val_ann,
-        max_frames=4,
-        processor=processor,
-        is_next=True
-    )
-
-    train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, collate_fn=collate_fn, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=0)
+    train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, collate_fn=collate_fn)
 
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
@@ -261,28 +247,20 @@ def main():
         train_loss = train_epoch(model, train_loader, optimizer, processor, device, grad_accum=2)
         print(f"Epoch {epoch} Train Loss:", train_loss)
 
-        save_dir = Path("results")
-        save_dir.mkdir(exist_ok=True)
-        
-        checkpoint = {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "train_loss": train_loss,
-        }
-        
-        torch.save(
-            checkpoint,
-            save_dir / f"checkpoint_epoch_{epoch}.pt"
+        checkpoint = save_checkpoint(
+            save_dir="results",
+            epoch=epoch,
+            model=model,
+            optimizer=optimizer,
+            train_loss=train_loss
         )
+
+        # overwrite as "checkpoint.pt"
+        torch.save(checkpoint, Path("results") / "checkpoint.pt")
+
         train_losses.append(train_loss)
 
-    
-    
-    save_dir = Path("results")
-    save_dir.mkdir(exist_ok=True)
-    
-    with open(save_dir / "training_loss.json", "w") as f:
+    with open(Path("results") / "training_loss.json", "w") as f:
         json.dump(train_losses, f, indent=2)
 
 
