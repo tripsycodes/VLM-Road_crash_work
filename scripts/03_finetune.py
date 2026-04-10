@@ -10,16 +10,29 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import argparse
-from results.checkpoints import save_checkpoint
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.utils import get_config
 from src.models import LLaVANeXTWrapper
-from src.training import LossTracker
 
 torch.backends.cuda.matmul.allow_tf32 = True
+
+
+# ✅ CHECKPOINT FUNCTION (self-contained)
+def save_checkpoint(save_dir, epoch, model, optimizer, train_loss):
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    checkpoint = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "train_loss": float(train_loss)
+    }
+
+    torch.save(checkpoint, save_dir / "checkpoint.pt")
 
 
 class VideoSummarizationDataset(Dataset):
@@ -247,16 +260,14 @@ def main():
         train_loss = train_epoch(model, train_loader, optimizer, processor, device, grad_accum=2)
         print(f"Epoch {epoch} Train Loss:", train_loss)
 
-        checkpoint = save_checkpoint(
+        # Save single checkpoint file
+        save_checkpoint(
             save_dir="results",
             epoch=epoch,
             model=model,
             optimizer=optimizer,
             train_loss=train_loss
         )
-
-        # overwrite as "checkpoint.pt"
-        torch.save(checkpoint, Path("results") / "checkpoint.pt")
 
         train_losses.append(train_loss)
 
