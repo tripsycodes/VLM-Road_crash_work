@@ -264,9 +264,17 @@ def main():
         save_dir = Path("results")
         save_dir.mkdir(exist_ok=True)
         
+        checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "train_loss": train_loss,
+            "val_loss": val_loss
+        }
+        
         torch.save(
-            model.state_dict(),
-            save_dir / f"model_epoch_{epoch}.pt"
+            checkpoint,
+            save_dir / f"checkpoint_epoch_{epoch}.pt"
         )
         train_losses.append(train_loss)
 
