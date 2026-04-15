@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+"""
+Evaluate fine-tuned model on test set with full metric suite.
+"""
 
 import sys
 import json
@@ -8,16 +11,21 @@ from tqdm import tqdm
 import cv2
 import numpy as np
 import torch
-import gc
 
 import nltk
 nltk.download("wordnet", quiet=True)
 nltk.download("omw-1.4", quiet=True)
 
+# Add project root
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+from src.evaluation import BLEUEvaluator, NLIEvaluator
 from src.utils import get_config
+
+from rouge_score import rouge_scorer
+from nltk.translate.meteor_score import meteor_score
+from bert_score import score as bert_score
 from PIL import Image
 
 
@@ -42,26 +50,34 @@ def load_frames(video_path: str, max_frames: int = 30):
 
 
 # -------------------------------
-def load_finetuned_model(checkpoint_path, base_model_name, device):
+def load_finetuned_model(checkpoint_path, base_model_name):
     from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration
     from peft import LoraConfig, get_peft_model, TaskType
+    from transformers import BitsAndBytesConfig
 
     print(f"Loading base model: {base_model_name}")
 
     processor = LlavaNextProcessor.from_pretrained(base_model_name)
 
+    # 🔥 4-bit quantization
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4"
+    )
+
     model = LlavaNextForConditionalGeneration.from_pretrained(
         base_model_name,
-        torch_dtype=torch.float16,
-        low_cpu_mem_usage=True
+        quantization_config=bnb_config,
+        device_map="auto"
     )
 
     print(f"Loading checkpoint: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
-
     state_dict = checkpoint["model_state_dict"]
 
-    # ✅ Correct LoRA config
+    # ✅ CORRECT LoRA
     lora_config = LoraConfig(
         r=4,
         lora_alpha=8,
@@ -73,16 +89,11 @@ def load_finetuned_model(checkpoint_path, base_model_name, device):
 
     model = get_peft_model(model, lora_config)
 
-    # Load only LoRA weights
+    # load only LoRA weights
     lora_state_dict = {k: v for k, v in state_dict.items() if "lora" in k.lower()}
     model.load_state_dict(lora_state_dict, strict=False)
 
-    model = model.half()
-    model = model.to("cpu") 
     model.eval()
-
-    # 🔥 Free memory
-    gc.collect()
     torch.cuda.empty_cache()
 
     print(f"Loaded checkpoint from epoch {checkpoint.get('epoch', 'unknown')}")
@@ -106,20 +117,30 @@ def load_finetuned_model(checkpoint_path, base_model_name, device):
             rep = frames[len(frames) // 2]
             img = Image.fromarray(rep).convert("RGB")
 
-            prompt = "USER: <image>\nDescribe the accident.\nASSISTANT:"
+            prompt = (
+                "You are an expert traffic accident analyst. "
+                "Describe clearly vehicles, crash, and outcome."
+            )
 
-            inputs = self.processor(text=prompt, images=img, return_tensors="pt")
-            
-            inputs = {k: v.to("cpu") for k, v in inputs.items()}
+            formatted_prompt = f"USER: <image>\n{prompt}\nASSISTANT:"
+
+            inputs = self.processor(
+                text=formatted_prompt,
+                images=img,
+                return_tensors="pt"
+            )
+
+            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
             with torch.no_grad():
-                out = self.model.generate(
+                outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=64,
-                    do_sample=False
+                    max_new_tokens=32,
+                    do_sample=False,
+                    use_cache=False
                 )
 
-            text = self.processor.decode(out[0], skip_special_tokens=True)
+            text = self.processor.decode(outputs[0], skip_special_tokens=True)
             return {"text_summary": text.split("ASSISTANT:")[-1].strip()}
 
     return Wrapper(model, processor)
@@ -130,6 +151,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--config", default=None)
+    parser.add_argument("--split", default="test")
     args = parser.parse_args()
 
     config = get_config(args.config)
@@ -138,37 +160,78 @@ def main():
     processed_dir = root_dir / config["dataset"]["processed_dir"]
 
     with open(processed_dir / "split_info.json") as f:
-        split = json.load(f)
+        split_info = json.load(f)
 
-    with open(processed_dir / "annotations_test.json") as f:
+    with open(processed_dir / f"annotations_{args.split}.json") as f:
         annotations = json.load(f)
+
+    videos = split_info["splits"][args.split]
 
     model = load_finetuned_model(
         args.checkpoint,
-        config["model"]["vision_model"],
-        device="cpu"
+        config["model"]["vision_model"]
     )
+
+    # evaluators
+    bleu_eval = BLEUEvaluator(max_order=4, smooth=True)
+    nli_eval = NLIEvaluator(device="cpu")
 
     predictions, references = [], []
 
     print("\nRunning inference...")
 
-    for video_path in tqdm(split["splits"]["test"]):
+    for video_path in tqdm(videos):
         vid = Path(video_path).stem
         if vid not in annotations:
             continue
 
+        gt = annotations[vid]["text_summary"]
         frames = load_frames(video_path)
-        if not frames:
+
+        if not frames or not gt.strip():
             continue
 
         pred = model.generate_summary(frames)["text_summary"]
-        gt = annotations[vid]["text_summary"]
 
         predictions.append(pred)
         references.append(gt)
 
-    print("\nDone. Samples:", len(predictions))
+    print("\nComputing metrics...")
+
+    bleu_scores = bleu_eval.compute_bleu_batch(predictions, references)
+    nli_scores = nli_eval.evaluate(predictions, references)
+
+    meteor_vals = [meteor_score([r.split()], p.split()) for p, r in zip(predictions, references)]
+    mean_meteor = float(np.mean(meteor_vals))
+
+    scorer = rouge_scorer.RougeScorer(["rouge1", "rouge2", "rougeL"], use_stemmer=True)
+    r1, r2, rl = [], [], []
+
+    for p, r in zip(predictions, references):
+        s = scorer.score(r, p)
+        r1.append(s["rouge1"].fmeasure)
+        r2.append(s["rouge2"].fmeasure)
+        rl.append(s["rougeL"].fmeasure)
+
+    mean_rouge_1 = float(np.mean(r1))
+    mean_rouge_2 = float(np.mean(r2))
+    mean_rouge_l = float(np.mean(rl))
+
+    _, _, F1 = bert_score(predictions, references, lang="en", device="cpu")
+    mean_bertscore = float(F1.mean())
+
+    from pycocoevalcap.cider.cider import Cider
+    cider = Cider()
+    cider_vals = [cider.compute_score({0: [r]}, {0: [p]})[0] for p, r in zip(predictions, references)]
+    mean_cider = float(np.mean(cider_vals))
+
+    print("\n===== RESULTS =====")
+    print(f"BLEU-4: {bleu_scores['bleu_4']:.4f}")
+    print(f"METEOR: {mean_meteor:.4f}")
+    print(f"ROUGE-L: {mean_rouge_l:.4f}")
+    print(f"BERTScore: {mean_bertscore:.4f}")
+    print(f"CIDEr: {mean_cider:.4f}")
+    print(f"NLI Entailment: {nli_scores['entailment_accuracy']:.4f}")
 
 
 if __name__ == "__main__":
