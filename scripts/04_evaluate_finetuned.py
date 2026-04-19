@@ -233,6 +233,38 @@ def main():
     print(f"CIDEr: {mean_cider:.4f}")
     print(f"NLI Entailment: {nli_scores['entailment_accuracy']:.4f}")
 
+        # -------------------------------
+    # Save metrics in required JSON format
+    results = {
+        "num_samples": len(predictions),
+        "bleu_scores": {
+            "bleu_1": float(bleu_scores.get("bleu_1", 0.0)),
+            "bleu_2": float(bleu_scores.get("bleu_2", 0.0)),
+            "bleu_3": float(bleu_scores.get("bleu_3", 0.0)),
+            "bleu_4": float(bleu_scores.get("bleu_4", 0.0))
+        },
+        "meteor": float(mean_meteor),
+        "rouge_1": float(mean_rouge_1),
+        "rouge_2": float(mean_rouge_2),
+        "rouge_l": float(mean_rouge_l),
+        "bertscore": float(mean_bertscore),
+        "cider": float(mean_cider),
+        "nli_scores": {
+            "entailment_accuracy": float(nli_scores.get("entailment_accuracy", 0.0)),
+            "avg_entailment_prob": float(nli_scores.get("entailment_accuracy", 0.0)),
+            "contradiction_rate": float(nli_scores.get("contradiction_rate", 0.0)),
+            "neutral_rate": float(nli_scores.get("neutral_rate", 0.0))
+        }
+    }
+
+    save_path = Path("results/finetuned/metrics.json")
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(save_path, "w") as f:
+        json.dump(results, f, indent=2)
+
+    print(f"\nMetrics saved to: {save_path}")
+
 
 if __name__ == "__main__":
     main()
