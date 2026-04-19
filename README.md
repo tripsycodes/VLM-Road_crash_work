@@ -14,13 +14,13 @@
 
 ## Task:
 
-| Phase | Tripti|
-|-------|--------|--------|
-| **1. Setup & data** | [x] Own notebook: env + data pipeline | [x] Same (or use shared processed data) |
-
-| **3. Training** | — | [x] Run fine-tuning (03) |
-| **4. Evaluation** | — | [x] Run fine-tuned eval (04) + comparison (05) |
-| **5. Report** | [x] Document: training curves, fine-tuned metrics, comparison |
+| Phase              | Tripti                                              |
+|-------------------|-----------------------------------------------------|
+| 1. Setup & Data   | [x] Own notebook: env + data pipeline               |
+|                   | [x] Same (or use shared processed data)             |
+| 3. Training       | [x] Run fine-tuning (03)                            |
+| 4. Evaluation     | [x] Run fine-tuned eval (04) + comparison (05)      |
+| 5. Report         | [x] Document: training curves, metrics, comparison  |
 
 **Outcome:** One Colab notebook run the **full pipeline from scratch**, plus a short report with tables and findings.
 
